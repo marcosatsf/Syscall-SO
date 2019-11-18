@@ -160,7 +160,7 @@ static int trigger_skcipher_encrypt(char *plaintext, int tam_plaintext)
     
     /* Verificar o tamanho esperado do Vetor de Inicialização */
     expected_iv_size = crypto_skcipher_ivsize(skcipher);
-    pr_info("Expected iv size = %d\n", expected_iv_size);
+    //pr_info("Expected iv size = %d\n", expected_iv_size);
 
     /* Requisitar uma área de memória para alocar a chave */
     Ekey = vmalloc(AES_KEY_SIZE_BYTES);
@@ -225,6 +225,10 @@ static int trigger_skcipher_encrypt(char *plaintext, int tam_plaintext)
     
     /* Exibir resultado para debug */
     resultdata = sg_virt(&sg_criptograf);
+
+    printk(KERN_INFO "===== BEGIN RESULT CRYPT =====\n");
+    hexdump(resultdata, scratchpad_size);
+    printk(KERN_INFO "=====  END RESULT CRYPT  =====");
 
     /* Armazenar resposta para devolver ao programa */
     for(x=0;x<scratchpad_size;x++){
@@ -299,7 +303,7 @@ static int trigger_skcipher_decrypt(char *ciphertext, int tam_ciphertext)
     
     /* Verificar o tamanho esperado do Vetor de Inicialização */
     expected_iv_size = crypto_skcipher_ivsize(skcipher);
-    pr_info("Expected iv size = %d\n", expected_iv_size);
+    //pr_info("Expected iv size = %d\n", expected_iv_size);
     
     /* Requisitar uma área de memória para alocar a chave */
     Ekey = vmalloc(AES_KEY_SIZE_BYTES);
@@ -366,6 +370,10 @@ static int trigger_skcipher_decrypt(char *ciphertext, int tam_ciphertext)
     /* Exibir resultado para debug */
     resultdata = sg_virt(&sg_decriptogr);
 
+    printk(KERN_INFO "===== BEGIN RESULT DECRYPT =====\n");
+    hexdump(resultdata, scratchpad_size);
+    printk(KERN_INFO "=====  END RESULT DECRYPT  =====");
+
     /* Armazenar resposta para devolver ao programa */
     for(x=0;x<scratchpad_size;x++){
 	    msgRet[2*x]     = c2h_conv((unsigned char)resultdata[x] / 16);
@@ -408,7 +416,7 @@ static int __init cripty_init(void){
 
    /* Fim Copia */
    
-   mutex_init(&ebbchar_mutex); // Initialize the mutex lock dynamically at runtime
+   //mutex_init(&ebbchar_mutex); // Initialize the mutex lock dynamically at runtime
    
    // Try to dynamically allocate a major number for the device -- more difficult but worth it
    majorNumber = register_chrdev(0, DEVICE_NAME, &fops);
@@ -443,7 +451,7 @@ static int __init cripty_init(void){
  *  code is used for a built-in driver (not a LKM) that this function is not required.
  */
 static void __exit cripty_exit(void){
-   mutex_destroy(&ebbchar_mutex);                           // destroy the dynamically-allocated mutex
+   //mutex_destroy(&ebbchar_mutex);                           // destroy the dynamically-allocated mutex
    device_destroy(ebbcharClass, MKDEV(majorNumber, 0));     // remove the device
    class_unregister(ebbcharClass);                          // unregister the device class
    class_destroy(ebbcharClass);                             // remove the device class
@@ -452,7 +460,7 @@ static void __exit cripty_exit(void){
 
 static int dev_open(struct inode *inodep, struct file *filep){
 
-   mutex_lock(&ebbchar_mutex);   // Try to acquire the mutex (i.e., put the lock on/down)
+   //mutex_lock(&ebbchar_mutex);   // Try to acquire the mutex (i.e., put the lock on/down)
    printk(KERN_INFO "EBBChar: Device successfully opened\n");
    numberOpens++;
    return 0;
@@ -491,7 +499,7 @@ static ssize_t dev_write(struct file *filep, const char *buffer, size_t len, lof
 
 static int dev_release(struct inode *inodep, struct file *filep){
 
-   mutex_unlock(&ebbchar_mutex);          // Releases the mutex (i.e., the lock goes up)
+   //mutex_unlock(&ebbchar_mutex);          // Releases the mutex (i.e., the lock goes up)
    printk(KERN_INFO "EBBChar: Device successfully closed\n");
    return 0;
 }
