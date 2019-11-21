@@ -32,90 +32,112 @@ enum cipher_mode { encrypt=0, decrypt };
 
 static void hexdump(unsigned char *, unsigned int);
 static int trigger_skcipher(char *, int, char *, enum cipher_mode);
-/*
-static int trigger_skcipher_encrypt(char *, int, char *);
-static int trigger_skcipher_decrypt(char *, int, char *);
-*/
 
-asmlinkage ssize_t sys_write_crypt(int fd, const void *buf, size_t nbytes)
+asmlinkage ssize_t sys_write_crypt(const void *buf, size_t size, size_t count, int fd)
 {
 	// Vars
 	char* cbuf;
-	int byte_atual, t;
+	int byte_atual;
 	char* decifrado;
 	char* cifrado;
 	ssize_t ret;
 	mm_segment_t old_fs;
 	int cipher_res;
+	size_t eff_blocksize;
 	
+	ret = 0;
 	cbuf = (char*)buf;
+	eff_blocksize = BLK_SIZE * ((size - 1) / BLK_SIZE) + BLK_SIZE; // Smallest BLK_SIZE-sized area to fit "size_t size"
 
 	pr_info("Params fd=%d, nbytes=%d\n", fd, (int)nbytes);
 
+	if (fd < 0) return fd;
+	if (size <= 0) return size;
+	if (count <= 0) return count;
+	
 	// Alloc
-	decifrado = (char*) vmalloc(nbytes * BLK_SIZE);
-	cifrado = (char*) vmalloc(nbytes * BLK_SIZE);
+	decifrado = (char*) vmalloc(eff_blocksize);
+	if (!decifrado) goto out_write;
+	cifrado = (char*) vmalloc(eff_blocksize);
+	if (!cifrado) goto out_write;
 	
-	// Fill
-	for (byte_atual = 0; byte_atual < nbytes; byte_atual++) {
-		decifrado[byte_atual * BLK_SIZE] = cbuf[byte_atual];
-		for (t = 1; t < BLK_SIZE; t++) decifrado[byte_atual * BLK_SIZE + t] = 0; // Fill with garbage maybe
+    old_fs = get_fs();
+    set_fs(KERNEL_DS);
+    
+	while (count) {
+	    // Fill
+	    for (byte_atual = 0; byte_atual < size;          byte_atual++) decifrado[byte_atual] = cbuf[byte_atual];
+	    for (;               byte_atual < eff_blocksize; byte_atual++) decifrado[byte_atual] = 0; //Padding (maybe fill with garbage)
+	    
+	    // Encrypt
+	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, cifrado, encrypt);
+	    if (cipher_res) { goto out_write; }
+	    
+	    // Write
+	    ret += sys_write(fd, cifrado, eff_blocksize);
+	    
+	    // Decrement
+	    count--;
 	}
-	
-	// Encrypt
-	cipher_res = trigger_skcipher(decifrado, nbytes * BLK_SIZE, cifrado, encrypt);
-	if (cipher_res) { ret = cipher_res; goto out_write; }
-	//trigger_skcipher_encrypt(malocao, nbytes * BLK_SIZE, cifrado);
-	
-	// Write
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	ret = sys_write(fd, cifrado, nbytes * BLK_SIZE);
-	set_fs(old_fs);
 	
 out_write:
 	// Free
 	vfree(decifrado);
 	vfree(cifrado);
         
+    set_fs(old_fs);
     return ret;
 }
 
-asmlinkage ssize_t sys_read_crypt(int fd, const void *buf, size_t nbytes)
+asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 {
 	// Vars
 	char* cbuf;
-	int byte_atual;//, t;
+	int byte_atual;
 	char* cifrado;
 	char* decifrado;
-	ssize_t ret;
+	ssize_t ret, thisret;
 	mm_segment_t old_fs;
 	int cipher_res;
+	int buffer_offset;
 	
+	ret = 0;
 	cbuf = (char*)buf;
+	eff_blocksize = BLK_SIZE * ((size - 1) / BLK_SIZE) + BLK_SIZE; // Smallest BLK_SIZE-sized area to fit "size_t size"
 
-	pr_info("Params fd=%d, nbytes=%d\n", fd, (int)nbytes);
-
-	// Alloc
-	cifrado = (char*) vmalloc(nbytes * BLK_SIZE);
-	decifrado = (char*) vmalloc(nbytes * BLK_SIZE);
+	pr_info("Params fd=%d, size=%d, count=%d\n", fd, (int)size, (int)count);
 	
 	if (fd < 0) return fd;
+	if (size <= 0) return size;
+	if (count <= 0) return count;
+
+	// Alloc
+	cifrado = (char*) vmalloc(eff_blocksize);
+	if (!cifrado) goto out_write;
+	decifrado = (char*) vmalloc(eff_blocksize);
+	if (!decifrado) goto out_write;
 	
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	sys_read(fd, cifrado, nbytes * BLK_SIZE);
 	
-	// Decrypt
-	cipher_res = trigger_skcipher(decifrado, nbytes * BLK_SIZE, cifrado, decrypt);
-	if (cipher_res) { ret = cipher_res; goto out_read; }
-	//trigger_skcipher_decrypt(malocao, nbytes * BLK_SIZE, decifrado);
-	
-	// Fill
-	for (byte_atual = 0; byte_atual < nbytes; byte_atual++) {
-		cbuf[byte_atual] = decifrado[byte_atual * BLK_SIZE];
+	while (count) {
+	    // Read from file
+	    thisret = sys_read(fd, cifrado, eff_blocksize);
+	    if (thisret < eff_blocksize) { pr_info("Read incomplete block"); goto out_read; }
+	    
+	    // Decrypt
+	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, cifrado, decrypt);
+	    if (cipher_res) { goto out_read; }
+	    
+	    // Fill
+	    for (byte_atual = 0; byte_atual < size; byte_atual++) cbuf[byte_atual + buffer_offset] = decifrado[byte_atual];
+	    
+	    // Decrement
+	    count--;
+	    
+	    // Increase offset (compensate for padding)
+	    buffer_offset += size;
 	}
-	ret = nbytes;
 	
 out_read:
 	// Free
