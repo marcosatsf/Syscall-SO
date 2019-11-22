@@ -105,11 +105,9 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	int cipher_res;
 	int buffer_offset;
 	size_t eff_blocksize;
-	int block_offset;
 	
 	ret = 0;
 	buffer_offset = 0;
-	block_offset = 0;
 	cbuf = (char*)buf;
 	eff_blocksize = BLK_SIZE * ((size - 1) / BLK_SIZE) + BLK_SIZE; // Smallest BLK_SIZE-sized area to fit "size_t size"
 
@@ -124,18 +122,18 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	
 	// Alloc
 	decifrado = NULL;
-	cifrado = (char*) vmalloc(eff_blocksize * count);
+	cifrado = (char*) vmalloc(eff_blocksize);
 	if (cifrado == NULL) goto out;
 	decifrado = (char*) vmalloc(eff_blocksize);
 	if (decifrado == NULL) goto out;
-	
-    // Read from file (one go or else it restarts)
-    thisret = sys_read(fd, cifrado, eff_blocksize * count);
-    if (thisret < eff_blocksize) { pr_info("Not enough blocks..."); goto out; }
     
 	while (count) {
+        // Read from file
+        thisret = sys_read(fd, cifrado, eff_blocksize);
+        if (thisret < eff_blocksize) { pr_info("Found incomplete block..."); goto out; }
+        
 	    // Decrypt
-	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, &(cifrado[block_offset]), decrypt);
+	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, cifrado, decrypt);
 	    if (cipher_res) { goto out; }
 	    
 	    // Fill
@@ -146,7 +144,6 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	    
 	    // Increase offset (compensate for padding)
 	    buffer_offset += size;
-	    block_offset += eff_blocksize;
 	    ret += thisret;
 	}
 	
