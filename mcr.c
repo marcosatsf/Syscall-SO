@@ -44,46 +44,50 @@ asmlinkage ssize_t sys_write_crypt(const void *buf, size_t size, size_t count, i
 	mm_segment_t old_fs;
 	int cipher_res;
 	size_t eff_blocksize;
+	int buffer_offset;
 	
 	ret = 0;
+	buffer_offset = 0;
 	cbuf = (char*)buf;
 	eff_blocksize = BLK_SIZE * ((size - 1) / BLK_SIZE) + BLK_SIZE; // Smallest BLK_SIZE-sized area to fit "size_t size"
 
-	pr_info("Params fd=%d, nbytes=%d\n", fd, (int)nbytes);
+	pr_info("Params fd=%d, size=%d, count=%d\n", fd, (int)size, (int)count);
 
 	if (fd < 0) return fd;
 	if (size <= 0) return size;
 	if (count <= 0) return count;
 	
-	// Alloc
-	decifrado = (char*) vmalloc(eff_blocksize);
-	if (!decifrado) goto out_write;
-	cifrado = (char*) vmalloc(eff_blocksize);
-	if (!cifrado) goto out_write;
-	
     old_fs = get_fs();
     set_fs(KERNEL_DS);
+	
+	// Alloc
+	cifrado = NULL;
+	decifrado = (char*) vmalloc(eff_blocksize);
+	if (decifrado == NULL) goto out;
+	cifrado = (char*) vmalloc(eff_blocksize);
+	if (cifrado == NULL) goto out;
     
 	while (count) {
 	    // Fill
-	    for (byte_atual = 0; byte_atual < size;          byte_atual++) decifrado[byte_atual] = cbuf[byte_atual];
+	    for (byte_atual = 0; byte_atual < size;          byte_atual++) decifrado[byte_atual] = cbuf[byte_atual + buffer_offset];
 	    for (;               byte_atual < eff_blocksize; byte_atual++) decifrado[byte_atual] = 0; //Padding (maybe fill with garbage)
 	    
 	    // Encrypt
 	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, cifrado, encrypt);
-	    if (cipher_res) { goto out_write; }
+	    if (cipher_res) { goto out; }
 	    
 	    // Write
 	    ret += sys_write(fd, cifrado, eff_blocksize);
 	    
 	    // Decrement
 	    count--;
+	    buffer_offset += size;
 	}
 	
-out_write:
+out:
 	// Free
-	vfree(decifrado);
-	vfree(cifrado);
+	if (cifrado != NULL) vfree(cifrado);
+	if (decifrado != NULL) vfree(decifrado);
         
     set_fs(old_fs);
     return ret;
@@ -100,8 +104,12 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	mm_segment_t old_fs;
 	int cipher_res;
 	int buffer_offset;
+	size_t eff_blocksize;
+	int block_offset;
 	
 	ret = 0;
+	buffer_offset = 0;
+	block_offset = 0;
 	cbuf = (char*)buf;
 	eff_blocksize = BLK_SIZE * ((size - 1) / BLK_SIZE) + BLK_SIZE; // Smallest BLK_SIZE-sized area to fit "size_t size"
 
@@ -111,23 +119,24 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	if (size <= 0) return size;
 	if (count <= 0) return count;
 
-	// Alloc
-	cifrado = (char*) vmalloc(eff_blocksize);
-	if (!cifrado) goto out_write;
-	decifrado = (char*) vmalloc(eff_blocksize);
-	if (!decifrado) goto out_write;
-	
 	old_fs = get_fs();
 	set_fs(KERNEL_DS);
 	
+	// Alloc
+	decifrado = NULL;
+	cifrado = (char*) vmalloc(eff_blocksize * count);
+	if (cifrado == NULL) goto out;
+	decifrado = (char*) vmalloc(eff_blocksize);
+	if (decifrado == NULL) goto out;
+	
+    // Read from file (one go or else it restarts)
+    thisret = sys_read(fd, cifrado, eff_blocksize * count);
+    if (thisret < eff_blocksize) { pr_info("Not enough blocks..."); goto out; }
+    
 	while (count) {
-	    // Read from file
-	    thisret = sys_read(fd, cifrado, eff_blocksize);
-	    if (thisret < eff_blocksize) { pr_info("Read incomplete block"); goto out_read; }
-	    
 	    // Decrypt
-	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, cifrado, decrypt);
-	    if (cipher_res) { goto out_read; }
+	    cipher_res = trigger_skcipher(decifrado, eff_blocksize, &(cifrado[block_offset]), decrypt);
+	    if (cipher_res) { goto out; }
 	    
 	    // Fill
 	    for (byte_atual = 0; byte_atual < size; byte_atual++) cbuf[byte_atual + buffer_offset] = decifrado[byte_atual];
@@ -137,12 +146,14 @@ asmlinkage ssize_t sys_read_crypt(void *buf, size_t size, size_t count, int fd)
 	    
 	    // Increase offset (compensate for padding)
 	    buffer_offset += size;
+	    block_offset += eff_blocksize;
+	    ret += thisret;
 	}
 	
-out_read:
+out:
 	// Free
-	vfree(cifrado);
-	vfree(decifrado);
+	if (cifrado != NULL) vfree(cifrado);
+	if (decifrado != NULL) vfree(decifrado);
         
     set_fs(old_fs);
     return ret;
